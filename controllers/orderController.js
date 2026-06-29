@@ -1,17 +1,25 @@
 const Order = require('../models/orderModel');
+const {
+  sendOrderConfirmation,
+  sendAdminOrderAlert,
+  sendOrderStatusUpdate,
+} = require('../config/email');
 
-// ─── CREATE ORDER ───────────────────────────
+// ─── CREATE ORDER ────────────────────────────────────────────────
 // POST /api/orders
 const createOrder = async (req, res) => {
   try {
-    const { customerInfo, orderItems, itemsPrice, shippingPrice, totalPrice, orderSource, paymentMethod, paymentDetails } = req.body;
+    const {
+      customerInfo, orderItems, itemsPrice,
+      shippingPrice, totalPrice, orderSource,
+      paymentMethod, paymentDetails,
+    } = req.body;
 
-    if (!orderItems || orderItems.length === 0) {
+    if (!orderItems || orderItems.length === 0)
       return res.status(400).json({ message: 'Order mein koi item nahi hai' });
-    }
 
-    // Determine if this payment method needs verification before processing
-    const needsVerification = ['EasyPaisa', 'JazzCash', 'Card', 'Bank Transfer'].includes(paymentMethod);
+    const needsVerification = ['EasyPaisa', 'JazzCash', 'Card', 'Bank Transfer']
+      .includes(paymentMethod);
 
     const order = await Order.create({
       user: req.user._id,
@@ -27,24 +35,48 @@ const createOrder = async (req, res) => {
       status: needsVerification ? 'Awaiting Payment' : 'Pending',
     });
 
-    res.status(201).json({ success: true, order });
+    // User populate karo email ke liye
+    const populatedOrder = await Order.findById(order._id)
+      .populate('user', 'name email');
+
+    const customerName = populatedOrder.user?.name || customerInfo?.name || 'Customer';
+    const customerEmail = populatedOrder.user?.email;
+
+    // ── Email: Customer ko confirmation ──
+    if (customerEmail) {
+      try {
+        await sendOrderConfirmation(customerEmail, customerName, populatedOrder);
+      } catch (err) {
+        console.error('Customer confirmation email failed:', err.message);
+      }
+    }
+
+    // ── Email: Admin ko alert ──
+    try {
+      await sendAdminOrderAlert(populatedOrder, customerName);
+    } catch (err) {
+      console.error('Admin alert email failed:', err.message);
+    }
+
+    res.status(201).json({ success: true, order: populatedOrder });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// ─── GET MY ORDERS ──────────────────────────
+// ─── GET MY ORDERS ───────────────────────────────────────────────
 // GET /api/orders/myorders
 const getMyOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ user: req.user._id }).sort({ createdAt: -1 });
+    const orders = await Order.find({ user: req.user._id })
+      .sort({ createdAt: -1 });
     res.json({ success: true, orders });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// ─── GET ALL ORDERS (Admin) ─────────────────
+// ─── GET ALL ORDERS (Admin) ──────────────────────────────────────
 // GET /api/orders
 const getAllOrders = async (req, res) => {
   try {
@@ -57,15 +89,17 @@ const getAllOrders = async (req, res) => {
   }
 };
 
-// ─── UPDATE ORDER STATUS (Admin) ────────────
+// ─── UPDATE ORDER STATUS (Admin) ─────────────────────────────────
 // PUT /api/orders/:id/status
 const updateOrderStatus = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id);
-    if (!order) {
-      return res.status(404).json({ message: 'Order nahi mila' });
-    }
+    const order = await Order.findById(req.params.id)
+      .populate('user', 'name email');
 
+    if (!order)
+      return res.status(404).json({ message: 'Order nahi mila' });
+
+    const prevStatus = order.status;
     order.status = req.body.status;
 
     if (req.body.status === 'Delivered') {
@@ -74,22 +108,37 @@ const updateOrderStatus = async (req, res) => {
     }
 
     const updatedOrder = await order.save();
+
+    // ── Email: status change hone par customer ko notify karo ──
+    if (req.body.status !== prevStatus && order.user?.email) {
+      try {
+        await sendOrderStatusUpdate(
+          order.user.email,
+          order.user.name,
+          updatedOrder,
+          req.body.status
+        );
+      } catch (err) {
+        console.error('Status update email failed:', err.message);
+      }
+    }
+
     res.json({ success: true, order: updatedOrder });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// ─── VERIFY PAYMENT (Admin) ────────────────
+// ─── VERIFY PAYMENT (Admin) ──────────────────────────────────────
 // PUT /api/orders/:id/verify-payment
 const verifyPayment = async (req, res) => {
   try {
     const { action } = req.body; // 'verify' or 'reject'
-    const order = await Order.findById(req.params.id);
+    const order = await Order.findById(req.params.id)
+      .populate('user', 'name email');
 
-    if (!order) {
+    if (!order)
       return res.status(404).json({ message: 'Order nahi mila' });
-    }
 
     if (action === 'verify') {
       order.paymentStatus = 'Verified';
@@ -101,24 +150,42 @@ const verifyPayment = async (req, res) => {
     }
 
     const updatedOrder = await order.save();
+
+    // ── Email: payment verify/reject hone par customer ko notify ──
+    if (order.user?.email) {
+      const newStatus = action === 'verify' ? 'Pending' : 'Cancelled';
+      try {
+        await sendOrderStatusUpdate(
+          order.user.email,
+          order.user.name,
+          updatedOrder,
+          newStatus
+        );
+      } catch (err) {
+        console.error('Payment verify email failed:', err.message);
+      }
+    }
+
     res.json({ success: true, order: updatedOrder });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// ─── GET DASHBOARD STATS (Admin) ────────────
+// ─── GET DASHBOARD STATS (Admin) ─────────────────────────────────
 // GET /api/orders/stats
 const getDashboardStats = async (req, res) => {
   try {
-    const totalOrders = await Order.countDocuments();
-    const pendingOrders = await Order.countDocuments({ status: 'Pending' });
+    const totalOrders     = await Order.countDocuments();
+    const pendingOrders   = await Order.countDocuments({ status: 'Pending' });
     const deliveredOrders = await Order.countDocuments({ status: 'Delivered' });
-    const awaitingPayment = await Order.countDocuments({ paymentStatus: 'Awaiting Verification' });
+    const awaitingPayment = await Order.countDocuments({
+      paymentStatus: 'Awaiting Verification',
+    });
 
     const revenueResult = await Order.aggregate([
       { $match: { status: { $ne: 'Cancelled' } } },
-      { $group: { _id: null, total: { $sum: '$totalPrice' } } }
+      { $group: { _id: null, total: { $sum: '$totalPrice' } } },
     ]);
     const totalRevenue = revenueResult[0]?.total || 0;
 
