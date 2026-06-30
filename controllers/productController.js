@@ -7,7 +7,6 @@ const getProducts = async (req, res) => {
   try {
     const { keyword, category, minPrice, maxPrice, sort } = req.query;
 
-    // Filter object banao
     let filter = {};
 
     if (keyword) {
@@ -22,8 +21,7 @@ const getProducts = async (req, res) => {
       if (maxPrice) filter.price.$lte = Number(maxPrice);
     }
 
-    // Sorting
-    let sortOption = { createdAt: -1 }; // Default: newest first
+    let sortOption = { createdAt: -1 };
     if (sort === 'low') sortOption = { price: 1 };
     if (sort === 'high') sortOption = { price: -1 };
 
@@ -70,7 +68,6 @@ const createProduct = async (req, res) => {
       isFeatured, isNewArrival, isBestSeller
     } = req.body;
 
-    // Images Cloudinary par upload karo
     let images = [];
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
@@ -108,11 +105,48 @@ const updateProduct = async (req, res) => {
       return res.status(404).json({ message: 'Product nahi mila' });
     }
 
-    const updated = await Product.findByIdAndUpdate(
-      req.params.id,
-      { ...req.body },
-      { new: true, runValidators: true }
+    const {
+      name, description, price, discountPrice,
+      category, brand, stock, specifications,
+      isFeatured, isNewArrival, isBestSeller,
+      existingImages,
+    } = req.body;
+
+    let images = existingImages ? JSON.parse(existingImages) : product.images;
+
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        const result = await cloudinary.uploader.upload(file.path, {
+          folder: 'mk_watches',
+        });
+        images.push({
+          url: result.secure_url,
+          public_id: result.public_id,
+        });
+      }
+    }
+
+    const removedImages = product.images.filter(
+      oldImg => !images.some(newImg => newImg.public_id === oldImg.public_id)
     );
+    for (const img of removedImages) {
+      await cloudinary.uploader.destroy(img.public_id);
+    }
+
+    product.name = name ?? product.name;
+    product.description = description ?? product.description;
+    product.price = price ?? product.price;
+    product.discountPrice = discountPrice ?? product.discountPrice;
+    product.category = category ?? product.category;
+    product.brand = brand ?? product.brand;
+    product.stock = stock ?? product.stock;
+    product.images = images;
+    product.specifications = specifications ? JSON.parse(specifications) : product.specifications;
+    product.isNewArrival = isNewArrival === 'true';
+    product.isBestSeller = isBestSeller === 'true';
+    if (isFeatured !== undefined) product.isFeatured = isFeatured === 'true';
+
+    const updated = await product.save();
 
     res.json({ success: true, product: updated });
   } catch (error) {
@@ -129,7 +163,6 @@ const deleteProduct = async (req, res) => {
       return res.status(404).json({ message: 'Product nahi mila' });
     }
 
-    // Cloudinary se images bhi delete karo
     for (const image of product.images) {
       await cloudinary.uploader.destroy(image.public_id);
     }
