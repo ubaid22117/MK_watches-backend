@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
 
-// Login check — kya user logged in hai?
 const protect = async (req, res, next) => {
   let token;
 
@@ -10,32 +9,28 @@ const protect = async (req, res, next) => {
     req.headers.authorization.startsWith('Bearer')
   ) {
     try {
-      // Token nikalo
       token = req.headers.authorization.split(' ')[1];
-      
-      // Verify karo
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      
-      // User find karo (password chhod ke)
       req.user = await User.findById(decoded.id).select('-password');
+      
+      if (!req.user) {
+        return res.status(401).json({ message: 'User not found' });
+      }
       
       next();
     } catch (error) {
-      res.status(401).json({ message: 'Token galat hai, access nahi milega' });
+      return res.status(401).json({ message: 'Invalid token, access denied' });
     }
-  }
-
-  if (!token) {
-    res.status(401).json({ message: 'Token nahi hai, access nahi milega' });
+  } else {
+    return res.status(401).json({ message: 'No token provided, access denied' });
   }
 };
 
-// Admin check — sirf admin access kar sake
 const adminOnly = (req, res, next) => {
   if (req.user && req.user.isAdmin) {
     next();
   } else {
-    res.status(403).json({ message: 'Sirf Admin access kar sakta hai' });
+    res.status(403).json({ message: 'Admin access required' });
   }
 };
 
